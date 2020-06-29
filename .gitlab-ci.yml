@@ -1,2 +1,5 @@
+stages:
+  - test
+
 include:
   - local: config/gitlab/SAST.gitlab-ci.yml
