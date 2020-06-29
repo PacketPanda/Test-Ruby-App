@@ -1,0 +1,2 @@
+include:
+  - local: config/gitlab/SAST.gitlab-ci.yml
