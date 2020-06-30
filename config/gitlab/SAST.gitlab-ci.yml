@@ -3,7 +3,7 @@
 # Configure the scanning tool through the environment variables.
 # List of the variables: https://gitlab.com/gitlab-org/security-products/sast#settings
 # How to set: https://docs.gitlab.com/ee/ci/yaml/#variables
-# Template updated for FLEXE June 30 2020
+
 
 variables:
   # Setting this variable will affect all Security templates
