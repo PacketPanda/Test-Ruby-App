@@ -1,15 +1,19 @@
-# Gitlab SAST Template
 # Read more about this feature here: https://docs.gitlab.com/ee/user/application_security/sast/
 #
 # Configure the scanning tool through the environment variables.
 # List of the variables: https://gitlab.com/gitlab-org/security-products/sast#settings
 # How to set: https://docs.gitlab.com/ee/ci/yaml/#variables
+# Template updated for FLEXE June 30 2020
 
 variables:
-  SAST_ANALYZER_IMAGE_PREFIX: "registry.gitlab.com/gitlab-org/security-products/analyzers"
+  # Setting this variable will affect all Security templates
+  # (SAST, Dependency Scanning, ...)
+  SECURE_ANALYZERS_PREFIX: "registry.gitlab.com/gitlab-org/security-products/analyzers"
+
   SAST_DEFAULT_ANALYZERS: "brakeman"
+  SAST_EXCLUDED_PATHS: "spec, test, tests, tmp"
   SAST_ANALYZER_IMAGE_TAG: 2
-  SAST_DISABLE_DIND: "false"
+  SAST_DISABLE_DIND: "true"
   SCAN_KUBERNETES_MANIFESTS: "false"
 
 sast:
@@ -18,19 +22,18 @@ sast:
   artifacts:
     reports:
       sast: gl-sast-report.json
-  only:
-    refs:
-      - branches
-    variables:
-      - $GITLAB_FEATURES =~ /\bsast\b/
+  rules:
+    - if: $SAST_DISABLED || $SAST_DISABLE_DIND == 'true'
+      when: never
+    - if: $CI_COMMIT_BRANCH && $GITLAB_FEATURES =~ /\bsast\b/
   image: docker:stable
   variables:
+    SEARCH_MAX_DEPTH: 4
     DOCKER_DRIVER: overlay2
     DOCKER_TLS_CERTDIR: ""
   services:
     - docker:stable-dind
   script:
-    - export SAST_VERSION=${SP_VERSION:-$(echo "$CI_SERVER_VERSION" | sed 's/^\([0-9]*\)\.\([0-9]*\).*/\1-\2-stable/')}
     - |
       if ! docker info &>/dev/null; then
         if [ -z "$DOCKER_HOST" -a "$KUBERNETES_PORT" ]; then
@@ -38,163 +41,202 @@ sast:
         fi
       fi
     - |
-      printenv | grep -E '^(DOCKER_|CI|GITLAB_|FF_|HOME|PWD|OLDPWD|PATH|SHLVL|HOSTNAME)' | cut -d'=' -f1 | \
-        (while IFS='\\n' read -r VAR; do unset -v "$VAR"; done; /bin/printenv > .env)
-    - |
       docker run \
-        --env-file .env \
+        $(awk 'BEGIN{for(v in ENVIRON) print v}' | grep -v -E '^(DOCKER_|CI|GITLAB_|FF_|HOME|PWD|OLDPWD|PATH|SHLVL|HOSTNAME)' | awk '{printf " -e %s", $0}') \
         --volume "$PWD:/code" \
         --volume /var/run/docker.sock:/var/run/docker.sock \
-        "registry.gitlab.com/gitlab-org/security-products/sast:$SAST_VERSION" /app/bin/run /code
-  except:
-    variables:
-      - $SAST_DISABLED
-      - $SAST_DISABLE_DIND == 'true'
+        "registry.gitlab.com/gitlab-org/security-products/sast:$SAST_ANALYZER_IMAGE_TAG" /app/bin/run /code
 
-.analyzer:
+.sast-analyzer:
   extends: sast
   services: []
-  except:
-    variables:
-      - $SAST_DISABLE_DIND == 'false'
+  rules:
+    - if: $SAST_DISABLED || $SAST_DISABLE_DIND == 'false'
+      when: never
+    - if: $CI_COMMIT_BRANCH &&
+        $GITLAB_FEATURES =~ /\bsast\b/
   script:
     - /analyzer run
 
 #bandit-sast:
-#  extends: .analyzer
+#  extends: .sast-analyzer
 #  image:
-#    name: "$SAST_ANALYZER_IMAGE_PREFIX/bandit:$SAST_ANALYZER_IMAGE_TAG"
-#  only:
-#    variables:
-#      - $GITLAB_FEATURES =~ /\bsast\b/ &&
-#        $SAST_DEFAULT_ANALYZERS =~ /bandit/&&
-#        $CI_PROJECT_REPOSITORY_LANGUAGES =~ /python/
+#    name: "$SECURE_ANALYZERS_PREFIX/bandit:$SAST_ANALYZER_IMAGE_TAG"
+#  rules:
+#    - if: $SAST_DISABLED || $SAST_DISABLE_DIND == 'false'
+#      when: never
+#    - if: $CI_COMMIT_BRANCH &&
+#          $GITLAB_FEATURES =~ /\bsast\b/ &&
+#          $SAST_DEFAULT_ANALYZERS =~ /bandit/
+#      exists:
+#        - '**/*.py'
 
 brakeman-sast:
-  extends: .analyzer
+  extends: .sast-analyzer
   image:
-    name: "$SAST_ANALYZER_IMAGE_PREFIX/brakeman:$SAST_ANALYZER_IMAGE_TAG"
-  only:
-    variables:
-      - $GITLAB_FEATURES =~ /\bsast\b/ &&
-        $SAST_DEFAULT_ANALYZERS =~ /brakeman/ &&
-        $CI_PROJECT_REPOSITORY_LANGUAGES =~ /ruby/
+    name: "$SECURE_ANALYZERS_PREFIX/brakeman:$SAST_ANALYZER_IMAGE_TAG"
+  rules:
+    - if: $SAST_DISABLED || $SAST_DISABLE_DIND == 'false'
+      when: never
+    - if: $CI_COMMIT_BRANCH &&
+        $SAST_DEFAULT_ANALYZERS =~ /brakeman/
+      exists:
+        - 'config/routes.rb'
 
 #eslint-sast:
-#  extends: .analyzer
+#  extends: .sast-analyzer
 #  image:
-#    name: "$SAST_ANALYZER_IMAGE_PREFIX/eslint:$SAST_ANALYZER_IMAGE_TAG"
-#  only:
-#    variables:
-#      - $GITLAB_FEATURES =~ /\bsast\b/ &&
-#        $SAST_DEFAULT_ANALYZERS =~ /eslint/ &&
-#        $CI_PROJECT_REPOSITORY_LANGUAGES =~ /javascript/
+#    name: "$SECURE_ANALYZERS_PREFIX/eslint:$SAST_ANALYZER_IMAGE_TAG"
+#  rules:
+#    - if: $SAST_DISABLED || $SAST_DISABLE_DIND == 'false'
+#      when: never
+#    - if: $CI_COMMIT_BRANCH &&
+#          $GITLAB_FEATURES =~ /\bsast\b/ &&
+#          $SAST_DEFAULT_ANALYZERS =~ /eslint/
+#      exists:
+#        - '**/*.html'
+#        - '**/*.js'
 
 #flawfinder-sast:
-#  extends: .analyzer
+#  extends: .sast-analyzer
 #  image:
-#    name: "$SAST_ANALYZER_IMAGE_PREFIX/flawfinder:$SAST_ANALYZER_IMAGE_TAG"
-#  only:
-#    variables:
-#      - $GITLAB_FEATURES =~ /\bsast\b/ &&
-#        $SAST_DEFAULT_ANALYZERS =~ /flawfinder/ &&
-#        $CI_PROJECT_REPOSITORY_LANGUAGES =~ /\b(c\+\+|c)\b/
+#    name: "$SECURE_ANALYZERS_PREFIX/flawfinder:$SAST_ANALYZER_IMAGE_TAG"
+#  rules:
+#    - if: $SAST_DISABLED || $SAST_DISABLE_DIND == 'false'
+#      when: never
+#    - if: $CI_COMMIT_BRANCH &&
+#          $GITLAB_FEATURES =~ /\bsast\b/ &&
+#          $SAST_DEFAULT_ANALYZERS =~ /flawfinder/
+#      exists:
+#        - '**/*.c'
+#        - '**/*.cpp'
 
 #kubesec-sast:
-#  extends: .analyzer
+#  extends: .sast-analyzer
 #  image:
-#    name: "$SAST_ANALYZER_IMAGE_PREFIX/kubesec:$SAST_ANALYZER_IMAGE_TAG"
-#  only:
-#    variables:
-#      - $GITLAB_FEATURES =~ /\bsast\b/ &&
-#        $SAST_DEFAULT_ANALYZERS =~ /kubesec/ &&
-#        $SCAN_KUBERNETES_MANIFESTS == 'true'
+#    name: "$SECURE_ANALYZERS_PREFIX/kubesec:$SAST_ANALYZER_IMAGE_TAG"
+#  rules:
+#    - if: $SAST_DISABLED || $SAST_DISABLE_DIND == 'false'
+#      when: never
+#    - if: $CI_COMMIT_BRANCH &&
+#          $GITLAB_FEATURES =~ /\bsast\b/ &&
+#          $SAST_DEFAULT_ANALYZERS =~ /kubesec/ &&
+#          $SCAN_KUBERNETES_MANIFESTS == 'true'
 
 #gosec-sast:
-#  extends: .analyzer
+#  extends: .sast-analyzer
 #  image:
-#    name: "$SAST_ANALYZER_IMAGE_PREFIX/gosec:$SAST_ANALYZER_IMAGE_TAG"
-#  only:
-#    variables:
-#      - $GITLAB_FEATURES =~ /\bsast\b/ &&
-#        $SAST_DEFAULT_ANALYZERS =~ /gosec/ &&
-#        $CI_PROJECT_REPOSITORY_LANGUAGES =~ /\bgo\b/
+#    name: "$SECURE_ANALYZERS_PREFIX/gosec:$SAST_ANALYZER_IMAGE_TAG"
+#  rules:
+#    - if: $SAST_DISABLED || $SAST_DISABLE_DIND == 'false'
+#      when: never
+#    - if: $CI_COMMIT_BRANCH &&
+#          $GITLAB_FEATURES =~ /\bsast\b/ &&
+#          $SAST_DEFAULT_ANALYZERS =~ /gosec/
+#      exists:
+#        - '**/*.go'
 
 #nodejs-scan-sast:
-#  extends: .analyzer
+#  extends: .sast-analyzer
 #  image:
-#    name: "$SAST_ANALYZER_IMAGE_PREFIX/nodejs-scan:$SAST_ANALYZER_IMAGE_TAG"
-#  only:
-#    variables:
-#      - $GITLAB_FEATURES =~ /\bsast\b/ &&
-#        $SAST_DEFAULT_ANALYZERS =~ /nodejs-scan/ &&
-#        $CI_PROJECT_REPOSITORY_LANGUAGES =~ /javascript/
+#    name: "$SECURE_ANALYZERS_PREFIX/nodejs-scan:$SAST_ANALYZER_IMAGE_TAG"
+#  rules:
+#    - if: $SAST_DISABLED || $SAST_DISABLE_DIND == 'false'
+#      when: never
+#    - if: $CI_COMMIT_BRANCH &&
+#          $GITLAB_FEATURES =~ /\bsast\b/ &&
+#          $SAST_DEFAULT_ANALYZERS =~ /nodejs-scan/
+#      exists:
+#        - 'package.json'
 
 #phpcs-security-audit-sast:
-#  extends: .analyzer
+#  extends: .sast-analyzer
 #  image:
-#    name: "$SAST_ANALYZER_IMAGE_PREFIX/phpcs-security-audit:$SAST_ANALYZER_IMAGE_TAG"
-#  only:
-#    variables:
-#      - $GITLAB_FEATURES =~ /\bsast\b/ &&
-#        $SAST_DEFAULT_ANALYZERS =~ /phpcs-security-audit/ &&
-#        $CI_PROJECT_REPOSITORY_LANGUAGES =~ /php/
+#    name: "$SECURE_ANALYZERS_PREFIX/phpcs-security-audit:$SAST_ANALYZER_IMAGE_TAG"
+#  rules:
+#    - if: $SAST_DISABLED || $SAST_DISABLE_DIND == 'false'
+#      when: never
+#    - if: $CI_COMMIT_BRANCH &&
+#          $GITLAB_FEATURES =~ /\bsast\b/ &&
+#          $SAST_DEFAULT_ANALYZERS =~ /phpcs-security-audit/
+#      exists:
+#        - '**/*.php'
 
 #pmd-apex-sast:
-#  extends: .analyzer
+#  extends: .sast-analyzer
 #  image:
-#    name: "$SAST_ANALYZER_IMAGE_PREFIX/pmd-apex:$SAST_ANALYZER_IMAGE_TAG"
-#  only:
-#    variables:
-#      - $GITLAB_FEATURES =~ /\bsast\b/ &&
-#        $SAST_DEFAULT_ANALYZERS =~ /pmd-apex/ &&
-#        $CI_PROJECT_REPOSITORY_LANGUAGES =~ /apex/
+#    name: "$SECURE_ANALYZERS_PREFIX/pmd-apex:$SAST_ANALYZER_IMAGE_TAG"
+#  rules:
+#    - if: $SAST_DISABLED || $SAST_DISABLE_DIND == 'false'
+#      when: never
+#    - if: $CI_COMMIT_BRANCH &&
+#          $GITLAB_FEATURES =~ /\bsast\b/ &&
+#          $SAST_DEFAULT_ANALYZERS =~ /pmd-apex/
+#      exists:
+#        - '**/*.cls'
 
 #secrets-sast:
-#  extends: .analyzer
-#  image:
-#    name: "$SAST_ANALYZER_IMAGE_PREFIX/secrets:$SAST_ANALYZER_IMAGE_TAG"
-#  only:
-#    variables:
-#      - $GITLAB_FEATURES =~ /\bsast\b/ &&
-#        $SAST_DEFAULT_ANALYZERS =~ /secrets/
+# extends: .sast-analyzer
+# image:
+#   name: "$SECURE_ANALYZERS_PREFIX/secrets:$SAST_ANALYZER_IMAGE_TAG"
+# rules:
+#   - if: $SAST_DISABLED || $SAST_DISABLE_DIND == 'false'
+#     when: never
+#   - if: $CI_COMMIT_BRANCH &&
+#         $GITLAB_FEATURES =~ /\bsast\b/ &&
+#         $SAST_DEFAULT_ANALYZERS =~ /secrets/
 
 #security-code-scan-sast:
-#  extends: .analyzer
-#  image:
-#    name: "$SAST_ANALYZER_IMAGE_PREFIX/security-code-scan:$SAST_ANALYZER_IMAGE_TAG"
-#  only:
-#    variables:
-#      - $GITLAB_FEATURES =~ /\bsast\b/ &&
-#        $SAST_DEFAULT_ANALYZERS =~ /security-code-scan/ &&
-#        $CI_PROJECT_REPOSITORY_LANGUAGES =~ /\b(c\#|visual basic\b)/
+# extends: .sast-analyzer
+# image:
+#   name: "$SECURE_ANALYZERS_PREFIX/security-code-scan:$SAST_ANALYZER_IMAGE_TAG"
+# rules:
+#   - if: $SAST_DISABLED || $SAST_DISABLE_DIND == 'false'
+#     when: never
+#   - if: $CI_COMMIT_BRANCH &&
+#         $GITLAB_FEATURES =~ /\bsast\b/ &&
+#         $SAST_DEFAULT_ANALYZERS =~ /security-code-scan/
+#     exists:
+#       - '**/*.csproj'
+#       - '**/*.vbproj'
 
 #sobelow-sast:
-#  extends: .analyzer
+#  extends: .sast-analyzer
 #  image:
-#    name: "$SAST_ANALYZER_IMAGE_PREFIX/sobelow:$SAST_ANALYZER_IMAGE_TAG"
-#  only:
-#    variables:
-#      - $GITLAB_FEATURES =~ /\bsast\b/ &&
-#        $SAST_DEFAULT_ANALYZERS =~ /sobelow/ &&
-#        $CI_PROJECT_REPOSITORY_LANGUAGES =~ /elixir/
+#    name: "$SECURE_ANALYZERS_PREFIX/sobelow:$SAST_ANALYZER_IMAGE_TAG"
+#  rules:
+#    - if: $SAST_DISABLED || $SAST_DISABLE_DIND == 'false'
+#      when: never
+#    - if: $CI_COMMIT_BRANCH &&
+#          $GITLAB_FEATURES =~ /\bsast\b/ &&
+#          $SAST_DEFAULT_ANALYZERS =~ /sobelow/
+#      exists:
+#        - 'mix.exs'
 
 #spotbugs-sast:
-#  extends: .analyzer
+#  extends: .sast-analyzer
 #  image:
-#    name: "$SAST_ANALYZER_IMAGE_PREFIX/spotbugs:$SAST_ANALYZER_IMAGE_TAG"
-#  only:
-#    variables:
-#      - $GITLAB_FEATURES =~ /\bsast\b/ &&
-#        $SAST_DEFAULT_ANALYZERS =~ /spotbugs/ &&
-#        $CI_PROJECT_REPOSITORY_LANGUAGES =~ /java\b/
+#    name: "$SECURE_ANALYZERS_PREFIX/spotbugs:$SAST_ANALYZER_IMAGE_TAG"
+#  rules:
+#    - if: $SAST_DISABLED || $SAST_DISABLE_DIND == 'false'
+#      when: never
+#    - if: $CI_COMMIT_BRANCH &&
+#          $GITLAB_FEATURES =~ /\bsast\b/ &&
+#          $SAST_DEFAULT_ANALYZERS =~ /spotbugs/
+#      exists:
+#        - '**/*.groovy'
+#        - '**/*.java'
+#        - '**/*.scala'
 
 #tslint-sast:
-#  extends: .analyzer
+#  extends: .sast-analyzer
 #  image:
-#    name: "$SAST_ANALYZER_IMAGE_PREFIX/tslint:$SAST_ANALYZER_IMAGE_TAG"
-#  only:
-#    variables:
-#      - $GITLAB_FEATURES =~ /\bsast\b/ &&
-#        $SAST_DEFAULT_ANALYZERS =~ /tslint/ &&
-#        $CI_PROJECT_REPOSITORY_LANGUAGES =~ /typescript/
+#    name: "$SECURE_ANALYZERS_PREFIX/tslint:$SAST_ANALYZER_IMAGE_TAG"
+#  rules:
+#    - if: $SAST_DISABLED || $SAST_DISABLE_DIND == 'false'
+#      when: never
+#    - if: $CI_COMMIT_BRANCH &&
+#          $GITLAB_FEATURES =~ /\bsast\b/ &&
+#          $SAST_DEFAULT_ANALYZERS =~ /tslint/
+#      exists:
+#        - '**/*.ts'
